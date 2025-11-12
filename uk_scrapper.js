@@ -18,21 +18,22 @@ async function fetchBooksMain() {
     waitUntil: "networkidle2",
     timeout: 30000,
   });
-  const books = await extractBooksFromMainPage(page, 24);
+  const booksPage1 = await extractBooksFromMainPage(page, 24);
+  
+  await page.goto("https://www.waterstones.com/books/bestsellers?page=2", {
+    waitUntil: "networkidle2",
+    timeout: 30000,
+  });
+  const booksPage2 = await extractBooksFromMainPage(page, 6);
 
-  // await page.goto("https://www.waterstones.com/books/bestsellers?page=2", {
-  //   waitUntil: "networkidle2",
-  //   timeout: 30000,
-  // });
-  // const booksPage2 = await extractBooksFromMainPage(page, 6);
+  const books = booksPage1.concat(
+    booksPage2.map((book, index) => ({
+      rank: 24 + index + 1,
+      title: book.title,
+      href: book.href,
+    }))
+  );
 
-  // const books = booksPage1.concat(
-  //   booksPage2.map((book, index) => ({
-  //     rank: 24 + index + 1,
-  //     title: book.title,
-  //     href: book.href,
-  //   }))
-  // );
   console.log(`Total ${books.length} of books retrieved.`);
   console.log('Starting detailed page crawling...');
 
