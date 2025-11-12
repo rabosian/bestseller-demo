@@ -1,7 +1,10 @@
-import puppeteer from "puppeteer";
+import puppeteer from "puppeteer-extra";
+import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import fs from "fs";
 import path from "path";
-import { info } from "console";
+import * as cheerio from 'cheerio';
+
+puppeteer.use(StealthPlugin());
 
 // CAPTCHA issue, cannot proceed with page 2
 async function fetchBooksMain() {
@@ -62,8 +65,8 @@ async function fetchBookDetail(browser, href) {
       // 개요
       const contentsEl = $('#scope_book_description')
       let contents = '';
-      contentsEl.querySelectorAll('p').forEach(p => {
-        contents += p.textContent + '\n';
+      contentsEl.find('p').each((_, p) => {
+        contents += $(p).text() + '\n';
       });
 
       await page.close();
