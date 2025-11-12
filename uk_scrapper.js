@@ -1,8 +1,9 @@
 import puppeteer from "puppeteer";
-import * as cheerio from "cheerio";
 import fs from "fs";
 import path from "path";
+import { info } from "console";
 
+// CAPTCHA issue, cannot proceed with page 2
 async function fetchBooksMain() {
   const browser = await puppeteer.launch({
     headless: false,
@@ -12,57 +13,91 @@ async function fetchBooksMain() {
 
   await page.goto("https://www.waterstones.com/books/bestsellers", {
     waitUntil: "networkidle2",
-    timeout: 60000,
+    timeout: 30000,
   });
-  page.on("console", (msg) => console.log("PAGE LOG:", msg.text()));
-  console.log("======got page======");
+  const books = await extractBooksFromMainPage(page, 24);
 
+  // await page.goto("https://www.waterstones.com/books/bestsellers?page=2", {
+  //   waitUntil: "networkidle2",
+  //   timeout: 30000,
+  // });
+  // const booksPage2 = await extractBooksFromMainPage(page, 6);
+
+  // const books = booksPage1.concat(
+  //   booksPage2.map((book, index) => ({
+  //     rank: 24 + index + 1,
+  //     title: book.title,
+  //     href: book.href,
+  //   }))
+  // );
+  console.log(`Total ${books.length} of books retrieved.`);
+  console.log('Starting detailed page crawling...');
+
+  const concurrency = 5;
+  for (let i = 0; i < books.length; i += concurrency) {
+      const batch = books.slice(i, i + concurrency);
+      const results = await Promise.all(batch.map(book => fetchBookDetail(browser, book.href)));
+      results.forEach((data, idx) => {
+          batch[idx].contents = data.contents;
+      });
+  }
+  await browser.close();
+
+
+  // --------------------- result_uk.json에 저장 ---------------------
+  const resultPath = path.join(process.cwd(), "result_uk.json");
+  fs.writeFileSync(resultPath, JSON.stringify(books, null, 2), "utf-8");
+  console.log(`Total ${books.length} of books saved to ${resultPath}.`);
+}
+
+async function fetchBookDetail(browser, href) {
+  const page = await browser.newPage();
+      await page.goto(href, { waitUntil: 'networkidle2' });
+  
+      await page.waitForSelector('section.book-info-tabs.ws-tabs.span12', { timeout: 30000 }).catch(() => {});
+
+      const html = await page.content();
+      const $ = cheerio.load(html);
+  
+      // 개요
+      const contentsEl = $('#scope_book_description')
+      let contents = '';
+      contentsEl.querySelectorAll('p').forEach(p => {
+        contents += p.textContent + '\n';
+      });
+
+      await page.close();
+      return { contents };
+}
+
+
+async function extractBooksFromMainPage(page, limit) {
   await page.waitForSelector("div.book-preview", { timeout: 0 });
-  console.log("======selector found=====");
 
-  // lazy-load 스크롤
-  await page.evaluate(async () => {
-    const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
-    let prevCount = 0,
-      retries = 0;
-    while (retries < 5) {
-      window.scrollBy(0, window.innerHeight);
-      await sleep(1500);
-      const currentCount = document.querySelectorAll("div.book-preview").length;
-      console.log("current count:", currentCount);
-      if (currentCount > prevCount) {
-        prevCount = currentCount;
-        retries = 0;
-      } else {
-        retries++;
-      }
-      if (currentCount >= 30) break; // 상위 30개면 종료
-    }
-  });
-  console.log("=====scroll complete=====");
-
-  await page.waitForFunction(
-    () => document.querySelectorAll("div.book-preview").length >= 30,
-    { timeout: 0 } // 30개 될때까지 무제한 대기
-  );
-  console.log("=====book-preview count reached 30=====");
-
-  const books = await page.evaluate(() => {
-    // 데이터 추출
-    const cards = document.querySelectorAll("div.book-preview");
+  const books = await page.evaluate((limit) => {
+    const cards = Array.from(
+      document.querySelectorAll("div.book-preview")
+    ).slice(0, limit);
     const result = [];
 
     cards.forEach((card, index) => {
       const imageWrap = card.querySelector(
         "div.inner > div.book-thumb-container > div.book-thumb > div.image-wrap"
       );
-      if (!imageWrap) return;
+      const infoWrap = card.querySelector(
+        "div.inner > div.info-wrap"
+      );
 
-      // 1️⃣ href: image-wrap 내부 첫 번째 <a>
+      if (!imageWrap || !infoWrap) return;
+
       const aTag = imageWrap.querySelector("a");
+      // const imgTag = imageWrap.querySelector("a > img");
+      // console.log(`imgTag: ${imgTag}`);
+      // const image = imgTag ? imgTag.src : null;
       const href = aTag ? aTag.href : null;
 
-      // 2️⃣ title: hover-layer 내부 span.visuallyhidden
+      const author = infoWrap.querySelector("span.author > a > b")?.textContent.trim() || null;
+
       const titleEl =
         imageWrap.querySelector(
           "div.hover-layer > div > div > div.pre-add > span.visuallyhidden"
@@ -70,99 +105,13 @@ async function fetchBooksMain() {
 
       const title = titleEl ? titleEl.textContent.trim() : null;
 
-      if (title && href) {
-        result.push({ rank: index + 1, title, href });
-      }
-      if (result.length >= 30) return;
+      result.push({ rank: index + 1, title, author, href });
+
     });
     return result;
-  });
-
-  // 상위 30개 선택
-  // const html = await page.content();
-  // const $ = cheerio.load(html);
-
-  // const books = [];
-  // $("div.book-preview")
-  //   .slice(0, 30)
-  //   .each((index, divEl) => {
-  //     const bookContainer = $(divEl).find(
-  //       "div.inner > div.book-thumb-container > div.book-thumb > div.image-wrap"
-  //     );
-
-  //     const aTag = bookContainer.find("a").first();
-  //     const detailHref = aTag.attr("href");
-
-  //     const titleEl =
-  //       bookContainer.find(
-  //         "div.hover-layer > div > div > div.pre-add > span.visuallyhidden"
-  //       ).first() || bookContainer.find("div.hover-layer span.visuallyhidden").first();
-
-  //     const title = titleEl.text().trim();
-
-  //     // const title = aTag.text().trim();
-  //     // const detailHref = aTag.attr("href");
-  //     if (title && detailHref) {
-  //       books.push({ rank: index + 1, title, detailHref });
-  //     }
-  //   });
-
-  console.log(`총 ${books.length}권의 책 정보를 가져왔습니다.`);
-  await browser.close();
-
-  // --------------------- result_uk.json에 저장 ---------------------
-  const resultPath = path.join(process.cwd(), "result_uk.json");
-  fs.writeFileSync(resultPath, JSON.stringify(books, null, 2), "utf-8");
-  console.log(`총 ${books.length}개의 결과가 ${resultPath}에 저장되었습니다.`);
+  }, limit);
+  return books;
 }
 
-const htmlChecker = async () => {
-  const browser = await puppeteer.launch({
-    headless: false,
-    defaultViewport: null,
-  });
-  const page = await browser.newPage();
 
-  await page.goto("https://www.waterstones.com/books/bestsellers", {
-    waitUntil: "networkidle2",
-    timeout: 60000,
-  });
-  console.log("======got page======");
-
-  await page.waitForSelector("div.book-preview", { timeout: 0 });
-  // await page.waitForFunction(
-  //   () => document.querySelectorAll("div.book-preview").length > 0,
-  //   { timeout: 0 }
-  // );
-
-  const bookCard = await page.$("div.book-preview"); // null이면 없음
-  if (bookCard) {
-    let href = null;
-    let title = null;
-
-    const bookContainer = await bookCard.$(
-      "div.inner > div.book-thumb-container > div.book-thumb > div.image-wrap"
-    );
-
-    const hrefHandle = await bookContainer.$("a");
-    if (hrefHandle) {
-      href = await page.evaluate((el) => el.href, hrefHandle);
-    }
-
-    const titleHandle =
-      (await bookContainer.$(
-        "div.hover-layer > div > div > div.pre-add > span.visuallyhidden"
-      )) || (await bookContainer.$("div.hover-layer span.visuallyhidden"));
-    if (titleHandle) {
-      title = await page.evaluate((el) => el.textContent.trim(), titleHandle);
-    }
-    console.log("첫 번째 책 카드:", { title, href });
-  } else {
-    console.log("div.book-preview 요소가 존재하지 않습니다.");
-  }
-
-  await browser.close();
-};
-
-// htmlChecker();
 fetchBooksMain();
